@@ -67,15 +67,13 @@ public:
             throw std::runtime_error(fmt::format("failed to av_find_best_stream. err = {}", steamIndex));
         }
 
-        AVPacket *pkt = av_packet_alloc();
-        if (pkt == NULL) {
-            throw std::bad_alloc();
-        }
+        AVPacket pkt;
+        av_init_packet(&pkt);
 
         MyFile file("out.aac", "wb");
 
         while (1) {
-            int err = av_read_frame(ctx, pkt);
+            int err = av_read_frame(ctx, &pkt);
             if (err < 0) {
                 if (err == AVERROR_EOF) {
                     // spdlog::info("end.");
@@ -86,17 +84,15 @@ public:
 
             // success
 
-            if (pkt->stream_index != steamIndex) {
-                av_packet_unref(pkt);
+            if (pkt.stream_index != steamIndex) {
+                av_packet_unref(&pkt);
                 continue;
             }
 
-            file.Write(pkt->data, pkt->size);
+            file.Write(pkt.data, pkt.size);
 
-            av_packet_unref(pkt);
+            av_packet_unref(&pkt);
         }
-
-        av_packet_free(&pkt);
     }
 
 private:

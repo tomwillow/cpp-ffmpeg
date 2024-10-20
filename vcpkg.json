@@ -1,0 +1,13 @@
+{
+  "dependencies":[
+  {
+    "name": "ffmpeg"
+  },
+  {
+    "name": "sdl2"
+  },
+  {
+	"name": "spdlog"
+  }
+  ]
+}

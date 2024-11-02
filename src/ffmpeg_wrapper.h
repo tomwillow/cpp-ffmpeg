@@ -14,7 +14,7 @@ extern "C" {
 #include <stdexcept>
 #include <functional>
 
-std::string GetErrorInfo(int err) noexcept {
+inline std::string GetErrorInfo(int err) noexcept {
     char msg[AV_ERROR_MAX_STRING_SIZE];
     av_make_error_string(msg, AV_ERROR_MAX_STRING_SIZE, err);
     return msg;
@@ -69,6 +69,14 @@ public:
         ctx.reset(rawCtx);
     }
 
+    AVFormatContext *Raw() noexcept {
+        return ctx.get();
+    }
+
+    void DumpFormat() const noexcept {
+        av_dump_format(ctx.get(), 0, NULL, 0);
+    }
+
     const MyStream &FindAudioStream() const noexcept {
         if (audioStreams.empty()) {
             int streamIndex = av_find_best_stream(ctx.get(), AVMediaType::AVMEDIA_TYPE_AUDIO, -1, -1, NULL, NULL);
@@ -114,6 +122,10 @@ public:
         }
 
         ctx.reset(rawCtx);
+    }
+
+    AVFormatContext *Raw() noexcept {
+        return ctx.get();
     }
 
     void DumpFormat() const noexcept {

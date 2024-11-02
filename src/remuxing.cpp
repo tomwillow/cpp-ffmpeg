@@ -1,8 +1,5 @@
-extern "C" {
-#define __STDC_CONSTANT_MACROS
-#include <libavutil/timestamp.h>
-#include <libavformat/avformat.h>
-}
+
+#include "ffmpeg_wrapper.h"
 
 #include <spdlog/spdlog.h>
 
@@ -20,7 +17,6 @@ static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, cons
 
 int main(int argc, char **argv) {
 
-    AVFormatContext *ifmt_ctx = NULL, *ofmt_ctx = NULL;
     AVPacket pkt;
     const char *in_filename, *out_filename;
     int ret, i;
@@ -40,37 +36,29 @@ int main(int argc, char **argv) {
     in_filename = argv[1];
     out_filename = argv[2];
 
-    if ((ret = avformat_open_input(&ifmt_ctx, in_filename, 0, 0)) < 0) {
-        fprintf(stderr, "Could not open input file '%s'", in_filename);
-        goto end;
-    }
+    MyAVFormatContext ifmt_ctx(argv[1]);
 
-    if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
-        fprintf(stderr, "Failed to retrieve input stream information");
-        goto end;
-    }
+    // if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
+    //     fprintf(stderr, "Failed to retrieve input stream information");
+    //     goto end;
+    // }
 
-    av_dump_format(ifmt_ctx, 0, in_filename, 0);
+    ifmt_ctx.DumpFormat();
 
-    avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_filename);
-    if (!ofmt_ctx) {
-        fprintf(stderr, "Could not create output context\n");
-        ret = AVERROR_UNKNOWN;
-        goto end;
-    }
+    MyOutputContext ofmt_ctx(argv[2]);
 
-    stream_mapping_size = ifmt_ctx->nb_streams;
+    stream_mapping_size = ifmt_ctx.Raw()->nb_streams;
     stream_mapping = (int *)av_malloc(stream_mapping_size * sizeof(*stream_mapping));
     if (!stream_mapping) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
 
-    const AVOutputFormat *ofmt = ofmt_ctx->oformat;
+    const AVOutputFormat *ofmt = ofmt_ctx.Raw()->oformat;
 
-    for (i = 0; i < ifmt_ctx->nb_streams; i++) {
+    for (i = 0; i < ifmt_ctx.Raw()->nb_streams; i++) {
         AVStream *out_stream;
-        AVStream *in_stream = ifmt_ctx->streams[i];
+        AVStream *in_stream = ifmt_ctx.Raw()->streams[i];
         AVCodecParameters *in_codecpar = in_stream->codecpar;
 
         if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO && in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
@@ -81,7 +69,7 @@ int main(int argc, char **argv) {
 
         stream_mapping[i] = stream_index++;
 
-        out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        out_stream = avformat_new_stream(ofmt_ctx.Raw(), NULL);
         if (!out_stream) {
             fprintf(stderr, "Failed allocating output stream\n");
             ret = AVERROR_UNKNOWN;
@@ -95,17 +83,18 @@ int main(int argc, char **argv) {
         }
         out_stream->codecpar->codec_tag = 0;
     }
-    av_dump_format(ofmt_ctx, 0, out_filename, 1);
+
+    ofmt_ctx.DumpFormat();
 
     if (!(ofmt->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
+        ret = avio_open(&ofmt_ctx.Raw()->pb, out_filename, AVIO_FLAG_WRITE);
         if (ret < 0) {
             fprintf(stderr, "Could not open output file '%s'", out_filename);
             goto end;
         }
     }
 
-    ret = avformat_write_header(ofmt_ctx, NULL);
+    ret = avformat_write_header(ofmt_ctx.Raw(), NULL);
     if (ret < 0) {
         fprintf(stderr, "Error occurred when opening output file\n");
         goto end;
@@ -114,19 +103,19 @@ int main(int argc, char **argv) {
     while (1) {
         AVStream *in_stream, *out_stream;
 
-        ret = av_read_frame(ifmt_ctx, &pkt);
+        ret = av_read_frame(ifmt_ctx.Raw(), &pkt);
         if (ret < 0)
             break;
 
-        in_stream = ifmt_ctx->streams[pkt.stream_index];
+        in_stream = ifmt_ctx.Raw()->streams[pkt.stream_index];
         if (pkt.stream_index >= stream_mapping_size || stream_mapping[pkt.stream_index] < 0) {
             av_packet_unref(&pkt);
             continue;
         }
 
         pkt.stream_index = stream_mapping[pkt.stream_index];
-        out_stream = ofmt_ctx->streams[pkt.stream_index];
-        log_packet(ifmt_ctx, &pkt, "in");
+        out_stream = ofmt_ctx.Raw()->streams[pkt.stream_index];
+        log_packet(ifmt_ctx.Raw(), &pkt, "in");
 
         /* copy packet */
         pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base,
@@ -135,9 +124,9 @@ int main(int argc, char **argv) {
                                    AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
         pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
         pkt.pos = -1;
-        log_packet(ofmt_ctx, &pkt, "out");
+        log_packet(ofmt_ctx.Raw(), &pkt, "out");
 
-        ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
+        ret = av_interleaved_write_frame(ofmt_ctx.Raw(), &pkt);
         if (ret < 0) {
             fprintf(stderr, "Error muxing packet\n");
             break;
@@ -145,15 +134,12 @@ int main(int argc, char **argv) {
         av_packet_unref(&pkt);
     }
 
-    av_write_trailer(ofmt_ctx);
+    av_write_trailer(ofmt_ctx.Raw());
 end:
 
-    avformat_close_input(&ifmt_ctx);
-
     /* close output */
-    if (ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE))
-        avio_closep(&ofmt_ctx->pb);
-    avformat_free_context(ofmt_ctx);
+    if (ofmt_ctx.Raw() && !(ofmt->flags & AVFMT_NOFILE))
+        avio_closep(&ofmt_ctx.Raw()->pb);
 
     av_freep(&stream_mapping);
 

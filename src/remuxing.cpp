@@ -21,8 +21,6 @@ int main(int argc, char **argv) {
     const char *in_filename, *out_filename;
     int ret, i;
     int stream_index = 0;
-    int *stream_mapping = NULL;
-    int stream_mapping_size = 0;
 
     if (argc < 3) {
         printf("usage: %s input output\n"
@@ -47,12 +45,7 @@ int main(int argc, char **argv) {
 
     MyOutputContext ofmt_ctx(argv[2]);
 
-    stream_mapping_size = ifmt_ctx.Raw()->nb_streams;
-    stream_mapping = (int *)av_malloc(stream_mapping_size * sizeof(*stream_mapping));
-    if (!stream_mapping) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
+    std::vector<int> streamMapping(ifmt_ctx.Raw()->nb_streams);
 
     const AVOutputFormat *ofmt = ofmt_ctx.Raw()->oformat;
 
@@ -63,11 +56,11 @@ int main(int argc, char **argv) {
 
         if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO && in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
             in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
-            stream_mapping[i] = -1;
+            streamMapping[i] = -1;
             continue;
         }
 
-        stream_mapping[i] = stream_index++;
+        streamMapping[i] = stream_index++;
 
         out_stream = avformat_new_stream(ofmt_ctx.Raw(), NULL);
         if (!out_stream) {
@@ -100,6 +93,10 @@ int main(int argc, char **argv) {
         goto end;
     }
 
+    // ifmt_ctx.TraversalPacket([](AVPacket &pkt, const MyStream &inputStream) {
+
+    //});
+
     while (1) {
         AVStream *in_stream, *out_stream;
 
@@ -108,12 +105,12 @@ int main(int argc, char **argv) {
             break;
 
         in_stream = ifmt_ctx.Raw()->streams[pkt.stream_index];
-        if (pkt.stream_index >= stream_mapping_size || stream_mapping[pkt.stream_index] < 0) {
+        if (pkt.stream_index >= streamMapping.size() || streamMapping[pkt.stream_index] < 0) {
             av_packet_unref(&pkt);
             continue;
         }
 
-        pkt.stream_index = stream_mapping[pkt.stream_index];
+        pkt.stream_index = streamMapping[pkt.stream_index];
         out_stream = ofmt_ctx.Raw()->streams[pkt.stream_index];
         log_packet(ifmt_ctx.Raw(), &pkt, "in");
 
@@ -140,8 +137,6 @@ end:
     /* close output */
     if (ofmt_ctx.Raw() && !(ofmt->flags & AVFMT_NOFILE))
         avio_closep(&ofmt_ctx.Raw()->pb);
-
-    av_freep(&stream_mapping);
 
     if (ret < 0 && ret != AVERROR_EOF) {
         fprintf(stderr, "Error occurred: %s\n", ret);

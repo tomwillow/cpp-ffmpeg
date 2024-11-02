@@ -21,6 +21,7 @@ find_package(spdlog CONFIG REQUIRED)
 file(GLOB SRC_CODE
 	src/*.h
 	src/*.cpp
+	src/*.c
 )
 
 # 目标exe

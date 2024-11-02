@@ -26,6 +26,9 @@ public:
 
     MyStream(AVStream *stream, AVFormatContext *outputCtx) {
         AVStream *s = avformat_new_stream(outputCtx, NULL);
+        if (s == nullptr) {
+            throw std::bad_alloc();
+        }
 
         int err = avcodec_parameters_copy(s->codecpar, stream->codecpar);
         if (err < 0) {

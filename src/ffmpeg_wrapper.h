@@ -6,6 +6,8 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include <fmt/format.h>
+
 #include <memory>
 #include <string>
 #include <cassert>
@@ -18,11 +20,11 @@ inline std::string GetErrorInfo(int err) noexcept {
     return msg;
 }
 
-class MyStream {
+class StreamRef {
 public:
-    MyStream(AVStream *stream) noexcept : stream(stream) {}
+    StreamRef(AVStream *stream) noexcept : stream(stream) {}
 
-    MyStream(AVStream *stream, AVFormatContext *outputCtx) {
+    StreamRef(AVStream *stream, AVFormatContext *outputCtx) {
         AVStream *s = avformat_new_stream(outputCtx, NULL);
         if (s == nullptr) {
             throw std::bad_alloc();
@@ -35,20 +37,16 @@ public:
         }
     }
 
-    MyStream(const MyStream &rhs) = delete;
-    MyStream &operator=(const MyStream &rhs) = delete;
-
-    MyStream(MyStream &&rhs) noexcept {
-        *this = std::move(rhs);
+    StreamRef(const StreamRef &rhs) noexcept {
+        *this = rhs;
     }
-    MyStream &operator=(MyStream &&rhs) noexcept {
-        if (&rhs == this) {
-            return;
-        }
-
+    StreamRef &operator=(const StreamRef &rhs) noexcept {
         stream = rhs.stream;
-        rhs.stream = nullptr;
         return *this;
+    }
+
+    bool operator==(const StreamRef &rhs) const noexcept {
+        return stream == rhs.stream;
     }
 
     AVRational GetTimeBase() const noexcept {
@@ -71,6 +69,15 @@ private:
     AVStream *stream;
 };
 
+namespace std {
+template <>
+struct hash<StreamRef> {
+    std::size_t operator()(const StreamRef &stream) const noexcept {
+        return reinterpret_cast<std::size_t>(stream.GetAVStream());
+    }
+};
+} // namespace std
+
 class Demuxer {
 public:
     Demuxer(const std::string &filename)
@@ -88,16 +95,16 @@ public:
         for (int i = 0; i < ctx->nb_streams; ++i) {
             switch (ctx->streams[i]->codecpar->codec_type) {
             case AVMediaType::AVMEDIA_TYPE_VIDEO:
-                videoStreams.push_back(MyStream(ctx->streams[i]));
+                videoStreams.push_back(StreamRef(ctx->streams[i]));
                 break;
             case AVMediaType::AVMEDIA_TYPE_AUDIO:
-                audioStreams.push_back(MyStream(ctx->streams[i]));
+                audioStreams.push_back(StreamRef(ctx->streams[i]));
                 break;
             case AVMediaType::AVMEDIA_TYPE_SUBTITLE:
-                subtitleStreams.push_back(MyStream(ctx->streams[i]));
+                subtitleStreams.push_back(StreamRef(ctx->streams[i]));
                 break;
             default:
-                otherStreams.push_back(MyStream(ctx->streams[i]));
+                otherStreams.push_back(StreamRef(ctx->streams[i]));
                 break;
             }
         }
@@ -111,20 +118,20 @@ public:
         av_dump_format(ctx.get(), 0, NULL, 0);
     }
 
-    const MyStream &FindBestStream(AVMediaType mediaType) const noexcept {
+    StreamRef FindBestStream(AVMediaType mediaType) const noexcept {
         int streamIndex = av_find_best_stream(ctx.get(), mediaType, -1, -1, NULL, NULL);
-        return MyStream(ctx->streams[streamIndex]);
+        return StreamRef(ctx->streams[streamIndex]);
     }
 
-    const MyStream &FindAudioStream() const noexcept {
+    StreamRef FindBestAudioStream() const noexcept {
         return FindBestStream(AVMediaType::AVMEDIA_TYPE_AUDIO);
     }
 
-    const MyStream &FindVideoStream() const noexcept {
+    StreamRef FindBestVideoStream() const noexcept {
         return FindBestStream(AVMediaType::AVMEDIA_TYPE_VIDEO);
     }
 
-    void TraversalPacket(std::function<void(AVPacket &pkt, const MyStream &inputStream)> fn) const {
+    void TraversalPacket(std::function<void(AVPacket &pkt, const StreamRef &inputStream)> fn) const {
         AVPacket pkt;
         av_init_packet(&pkt);
 
@@ -139,7 +146,7 @@ public:
 
             // success
 
-            fn(pkt, MyStream(ctx->streams[pkt.stream_index]));
+            fn(pkt, StreamRef(ctx->streams[pkt.stream_index]));
 
             av_packet_unref(&pkt);
         }
@@ -147,15 +154,18 @@ public:
 
 private:
     std::unique_ptr<AVFormatContext, void (*)(AVFormatContext *)> ctx;
-    mutable std::vector<MyStream> videoStreams;
-    mutable std::vector<MyStream> audioStreams;
-    mutable std::vector<MyStream> subtitleStreams;
-    mutable std::vector<MyStream> otherStreams;
+    std::vector<StreamRef> videoStreams;
+    std::vector<StreamRef> audioStreams;
+    std::vector<StreamRef> subtitleStreams;
+    std::vector<StreamRef> otherStreams;
 };
 
 class Muxer {
 public:
-    Muxer(const std::string &outputFileName) : ctx(nullptr, avformat_free_context) {
+    /**
+     * @exception
+     */
+    Muxer(const std::string &outputFileName) : outputFileName(outputFileName), ctx(nullptr, avformat_free_context) {
         AVFormatContext *rawCtx = nullptr;
         int err = avformat_alloc_output_context2(&rawCtx, NULL, NULL, outputFileName.c_str());
         if (err < 0) {
@@ -174,7 +184,10 @@ public:
         av_dump_format(ctx.get(), 0, NULL, 1);
     }
 
-    void AddNewStream(const AVCodecParameters &param) {
+    /**
+     * @exception
+     */
+    const StreamRef &AddNewStream(const AVCodecParameters &param) {
         AVStream *s = avformat_new_stream(ctx.get(), NULL);
 
         int err = avcodec_parameters_copy(s->codecpar, &param);
@@ -182,33 +195,63 @@ public:
             throw std::runtime_error(
                 fmt::format("failed to avcodec_parameters_copy. err = {}, {}", err, GetErrorInfo(err)));
         }
-        // s->codecpar->codec_tag = 0;
-        // s->time_base = AVRational{0, 0};
-        // s->duration = 0;
-        // s->start_time = 0;
-        audioStreams.push_back(MyStream(s));
+        s->codecpar->codec_tag = 0;
+        StreamRef ret(s);
+
+        switch (param.codec_type) {
+        case AVMediaType::AVMEDIA_TYPE_VIDEO:
+            videoStreams.push_back(ret);
+            break;
+        case AVMediaType::AVMEDIA_TYPE_AUDIO:
+            audioStreams.push_back(ret);
+            break;
+        case AVMediaType::AVMEDIA_TYPE_SUBTITLE:
+            subtitleStreams.push_back(ret);
+            break;
+        default:
+            otherStreams.push_back(ret);
+            break;
+        }
+        return ret;
+    }
+
+    void CopyStream(const StreamRef &otherStream) {
+        StreamRef newStreamRef = AddNewStream(otherStream.GetAVCodecParameters());
+        otherStreamsToMyStreams.insert({otherStream, newStreamRef});
     }
 
     void WriteToFile(const Demuxer &inputCtx) const {
+        if (!(ctx->flags & AVFMT_NOFILE)) {
+            int err = avio_open(&ctx->pb, outputFileName.c_str(), AVIO_FLAG_WRITE);
+            if (err < 0) {
+                throw std::runtime_error(
+                    fmt::format("failed to avcodec_parameters_copy. err = {}, {}", err, GetErrorInfo(err)));
+            }
+        }
+
         int err = avformat_write_header(ctx.get(), NULL);
         if (err < 0) {
             throw std::runtime_error(
                 fmt::format("failed to avformat_write_header. err = {}, {}", err, GetErrorInfo(err)));
         }
 
-        const MyStream &outStream = audioStreams[0];
-        inputCtx.TraversalPacket([this, &outStream](AVPacket &pkt, const MyStream &inputStream) {
-            if (inputStream.GetAVCodecParameters().codec_type != AVMediaType::AVMEDIA_TYPE_AUDIO) {
+        inputCtx.TraversalPacket([this](AVPacket &pkt, const StreamRef &inputStream) {
+            if (otherStreamsToMyStreams.count(inputStream) == 0) {
                 return;
             }
 
-            // pkt.stream_index = 0;
-            // pkt.pts = av_rescale_q_rnd(pkt.pts, inputStream.GetTimeBase(), outStream.GetTimeBase(),
-            //                            AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-            // pkt.dts = av_rescale_q_rnd(pkt.dts, inputStream.GetTimeBase(), outStream.GetTimeBase(),
-            //                            AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-            // pkt.duration = av_rescale_q(pkt.duration, inputStream.GetTimeBase(), outStream.GetTimeBase());
-            // pkt.pos = -1;
+            pkt.stream_index = otherStreamsToMyStreams.at(inputStream).GetAVStream()->index;
+            AVStream *out_stream = ctx.get()->streams[pkt.stream_index];
+            // log_packet(ifmt_ctx.Raw(), &pkt, "in");
+
+            /* copy packet */
+            pkt.pts = av_rescale_q_rnd(pkt.pts, inputStream.GetTimeBase(), out_stream->time_base,
+                                       AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+            pkt.dts = av_rescale_q_rnd(pkt.dts, inputStream.GetTimeBase(), out_stream->time_base,
+                                       AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
+            pkt.duration = av_rescale_q(pkt.duration, inputStream.GetTimeBase(), out_stream->time_base);
+            pkt.pos = -1;
+            // log_packet(ctx.get(), &pkt, "out");
 
             int err = av_interleaved_write_frame(ctx.get(), &pkt);
             if (err < 0) {
@@ -217,13 +260,20 @@ public:
             }
         });
 
-        err = av_write_trailer(ctx.get());
-        if (err < 0) {
-            throw std::runtime_error(fmt::format("failed to av_write_trailer. err = {}, {}", err, GetErrorInfo(err)));
-        }
+        av_write_trailer(ctx.get());
+
+        /* close output */
+        if (!(ctx->flags & AVFMT_NOFILE))
+            avio_closep(&ctx->pb);
     }
 
 private:
+    const std::string &outputFileName;
     std::unique_ptr<AVFormatContext, void (*)(AVFormatContext *)> ctx;
-    std::vector<MyStream> audioStreams;
+    std::vector<StreamRef> videoStreams;
+    std::vector<StreamRef> audioStreams;
+    std::vector<StreamRef> subtitleStreams;
+    std::vector<StreamRef> otherStreams;
+
+    std::unordered_map<StreamRef, StreamRef> otherStreamsToMyStreams;
 };

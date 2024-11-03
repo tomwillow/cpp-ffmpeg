@@ -1,5 +1,4 @@
 #pragma once
-#include <fmt/format.h>
 
 extern "C" {
 #include <libavutil/log.h>
@@ -8,7 +7,6 @@ extern "C" {
 }
 
 #include <memory>
-#include <array>
 #include <string>
 #include <cassert>
 #include <stdexcept>
@@ -37,6 +35,22 @@ public:
         }
     }
 
+    MyStream(const MyStream &rhs) = delete;
+    MyStream &operator=(const MyStream &rhs) = delete;
+
+    MyStream(MyStream &&rhs) noexcept {
+        *this = std::move(rhs);
+    }
+    MyStream &operator=(MyStream &&rhs) noexcept {
+        if (&rhs == this) {
+            return;
+        }
+
+        stream = rhs.stream;
+        rhs.stream = nullptr;
+        return *this;
+    }
+
     AVRational GetTimeBase() const noexcept {
         return stream->time_base;
     }
@@ -57,9 +71,9 @@ private:
     AVStream *stream;
 };
 
-class MyAVFormatContext {
+class Demuxer {
 public:
-    MyAVFormatContext(const std::string &filename)
+    Demuxer(const std::string &filename)
         : ctx(nullptr, [](AVFormatContext *rawCtx) {
               avformat_close_input(&rawCtx);
           }) {
@@ -70,6 +84,23 @@ public:
         }
 
         ctx.reset(rawCtx);
+
+        for (int i = 0; i < ctx->nb_streams; ++i) {
+            switch (ctx->streams[i]->codecpar->codec_type) {
+            case AVMediaType::AVMEDIA_TYPE_VIDEO:
+                videoStreams.push_back(MyStream(ctx->streams[i]));
+                break;
+            case AVMediaType::AVMEDIA_TYPE_AUDIO:
+                audioStreams.push_back(MyStream(ctx->streams[i]));
+                break;
+            case AVMediaType::AVMEDIA_TYPE_SUBTITLE:
+                subtitleStreams.push_back(MyStream(ctx->streams[i]));
+                break;
+            default:
+                otherStreams.push_back(MyStream(ctx->streams[i]));
+                break;
+            }
+        }
     }
 
     AVFormatContext *Raw() noexcept {
@@ -80,12 +111,17 @@ public:
         av_dump_format(ctx.get(), 0, NULL, 0);
     }
 
+    const MyStream &FindBestStream(AVMediaType mediaType) const noexcept {
+        int streamIndex = av_find_best_stream(ctx.get(), mediaType, -1, -1, NULL, NULL);
+        return MyStream(ctx->streams[streamIndex]);
+    }
+
     const MyStream &FindAudioStream() const noexcept {
-        if (audioStreams.empty()) {
-            int streamIndex = av_find_best_stream(ctx.get(), AVMediaType::AVMEDIA_TYPE_AUDIO, -1, -1, NULL, NULL);
-            audioStreams.push_back(MyStream(ctx->streams[streamIndex]));
-        }
-        return audioStreams[0];
+        return FindBestStream(AVMediaType::AVMEDIA_TYPE_AUDIO);
+    }
+
+    const MyStream &FindVideoStream() const noexcept {
+        return FindBestStream(AVMediaType::AVMEDIA_TYPE_VIDEO);
     }
 
     void TraversalPacket(std::function<void(AVPacket &pkt, const MyStream &inputStream)> fn) const {
@@ -111,12 +147,15 @@ public:
 
 private:
     std::unique_ptr<AVFormatContext, void (*)(AVFormatContext *)> ctx;
+    mutable std::vector<MyStream> videoStreams;
     mutable std::vector<MyStream> audioStreams;
+    mutable std::vector<MyStream> subtitleStreams;
+    mutable std::vector<MyStream> otherStreams;
 };
 
-class MyOutputContext {
+class Muxer {
 public:
-    MyOutputContext(const std::string &outputFileName) : ctx(nullptr, avformat_free_context) {
+    Muxer(const std::string &outputFileName) : ctx(nullptr, avformat_free_context) {
         AVFormatContext *rawCtx = nullptr;
         int err = avformat_alloc_output_context2(&rawCtx, NULL, NULL, outputFileName.c_str());
         if (err < 0) {
@@ -150,7 +189,7 @@ public:
         audioStreams.push_back(MyStream(s));
     }
 
-    void WriteToFile(const MyAVFormatContext &inputCtx) const {
+    void WriteToFile(const Demuxer &inputCtx) const {
         int err = avformat_write_header(ctx.get(), NULL);
         if (err < 0) {
             throw std::runtime_error(

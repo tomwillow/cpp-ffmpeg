@@ -12,7 +12,7 @@ int main2() {
 
     try {
 
-        MyAVFormatContext input("test.mp4");
+        Demuxer input("test.mp4");
 
         auto &audioStream = input.FindAudioStream();
 
@@ -31,8 +31,8 @@ int main2() {
             file.Write(pkt.data, pkt.size);
         });
 
-        // MyOutputContext output("out." + audioStream.GetCodecName());
-        // MyOutputContext output("out.flv");
+        // Muxer output("out." + audioStream.GetCodecName());
+        // Muxer output("out.flv");
 
         // output.AddNewStream(audioStream.GetAVCodecParameters());
 

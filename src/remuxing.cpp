@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     std::string in_filename = argv[1];
     std::string out_filename = argv[2];
 
-    MyAVFormatContext ifmt_ctx(in_filename);
+    Demuxer ifmt_ctx(in_filename);
 
     // if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
     //     fprintf(stderr, "Failed to retrieve input stream information");
@@ -40,7 +40,7 @@ int main(int argc, char **argv) {
 
     ifmt_ctx.DumpFormat();
 
-    MyOutputContext ofmt_ctx(out_filename);
+    Muxer ofmt_ctx(out_filename);
 
     std::vector<int> streamMapping(ifmt_ctx.Raw()->nb_streams, -1);
 

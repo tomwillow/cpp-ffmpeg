@@ -17,10 +17,7 @@ static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, cons
 
 int main(int argc, char **argv) {
 
-    AVPacket pkt;
-    const char *in_filename;
     int ret, i;
-    int stream_index = 0;
 
     if (argc < 3) {
         printf("usage: %s input output\n"
@@ -31,10 +28,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    in_filename = argv[1];
+    std::string in_filename = argv[1];
     std::string out_filename = argv[2];
 
-    MyAVFormatContext ifmt_ctx(argv[1]);
+    MyAVFormatContext ifmt_ctx(in_filename);
 
     // if ((ret = avformat_find_stream_info(ifmt_ctx, 0)) < 0) {
     //     fprintf(stderr, "Failed to retrieve input stream information");
@@ -49,24 +46,20 @@ int main(int argc, char **argv) {
 
     const AVOutputFormat *ofmt = ofmt_ctx.Raw()->oformat;
 
+    int stream_index = 0;
     for (i = 0; i < ifmt_ctx.Raw()->nb_streams; i++) {
-        AVStream *out_stream;
         AVStream *in_stream = ifmt_ctx.Raw()->streams[i];
         AVCodecParameters *in_codecpar = in_stream->codecpar;
 
-        // if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO && in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
-        //     in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
-        //     streamMapping[i] = -1;
-        //     continue;
-        // }
-        if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+        if (in_codecpar->codec_type != AVMEDIA_TYPE_AUDIO && in_codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+            in_codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) {
             streamMapping[i] = -1;
             continue;
         }
 
         streamMapping[i] = stream_index++;
 
-        out_stream = avformat_new_stream(ofmt_ctx.Raw(), NULL);
+        AVStream *out_stream = avformat_new_stream(ofmt_ctx.Raw(), NULL);
         if (!out_stream) {
             fprintf(stderr, "Failed allocating output stream\n");
             ret = AVERROR_UNKNOWN;

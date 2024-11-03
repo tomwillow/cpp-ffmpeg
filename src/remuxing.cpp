@@ -5,18 +5,6 @@
 
 #include <spdlog/spdlog.h>
 
-double timestr(int64_t ts, const AVRational &tb) noexcept {
-    return av_q2d(tb) * ts;
-}
-
-static void log_packet(const AVFormatContext *fmt_ctx, const AVPacket *pkt, const char *tag) {
-    const AVRational &time_base = fmt_ctx->streams[pkt->stream_index]->time_base;
-
-    spdlog::info("{}: pts:{} pts_time:{} dts:{} dts_time:{} duration:{} duration_time:{} stream_index:{}", tag,
-                 pkt->pts, timestr(pkt->pts, time_base), pkt->dts, timestr(pkt->dts, time_base), pkt->duration,
-                 timestr(pkt->duration, time_base), pkt->stream_index);
-}
-
 int main(int argc, char **argv) {
     MemoryLeakDetector mld;
 

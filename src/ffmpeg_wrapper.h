@@ -7,6 +7,7 @@ extern "C" {
 }
 
 #include <fmt/format.h>
+#include <spdlog/spdlog.h>
 
 #include <memory>
 #include <string>
@@ -18,6 +19,16 @@ inline std::string GetErrorInfo(int err) noexcept {
     char msg[AV_ERROR_MAX_STRING_SIZE];
     av_make_error_string(msg, AV_ERROR_MAX_STRING_SIZE, err);
     return msg;
+}
+
+double timestr(int64_t ts, const AVRational &tb) noexcept {
+    return av_q2d(tb) * ts;
+}
+
+static void log_packet(const AVRational &time_base, const AVPacket *pkt, const char *tag) {
+    spdlog::info("{}: pts:{} pts_time:{} dts:{} dts_time:{} duration:{} duration_time:{} stream_index:{}", tag,
+                 pkt->pts, timestr(pkt->pts, time_base), pkt->dts, timestr(pkt->dts, time_base), pkt->duration,
+                 timestr(pkt->duration, time_base), pkt->stream_index);
 }
 
 class StreamRef {
@@ -187,7 +198,7 @@ public:
     /**
      * @exception
      */
-    const StreamRef &AddNewStream(const AVCodecParameters &param) {
+    StreamRef AddNewStream(const AVCodecParameters &param) {
         AVStream *s = avformat_new_stream(ctx.get(), NULL);
 
         int err = avcodec_parameters_copy(s->codecpar, &param);
@@ -240,18 +251,18 @@ public:
                 return;
             }
 
-            pkt.stream_index = otherStreamsToMyStreams.at(inputStream).GetAVStream()->index;
-            AVStream *out_stream = ctx.get()->streams[pkt.stream_index];
-            // log_packet(ifmt_ctx.Raw(), &pkt, "in");
+            StreamRef outStream = otherStreamsToMyStreams.at(inputStream);
+            pkt.stream_index = outStream.GetAVStream()->index;
+            // log_packet(inputStream.GetTimeBase(), &pkt, "in");
 
             /* copy packet */
-            pkt.pts = av_rescale_q_rnd(pkt.pts, inputStream.GetTimeBase(), out_stream->time_base,
+            pkt.pts = av_rescale_q_rnd(pkt.pts, inputStream.GetTimeBase(), outStream.GetTimeBase(),
                                        AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-            pkt.dts = av_rescale_q_rnd(pkt.dts, inputStream.GetTimeBase(), out_stream->time_base,
+            pkt.dts = av_rescale_q_rnd(pkt.dts, inputStream.GetTimeBase(), outStream.GetTimeBase(),
                                        AVRounding(AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX));
-            pkt.duration = av_rescale_q(pkt.duration, inputStream.GetTimeBase(), out_stream->time_base);
+            pkt.duration = av_rescale_q(pkt.duration, inputStream.GetTimeBase(), outStream.GetTimeBase());
             pkt.pos = -1;
-            // log_packet(ctx.get(), &pkt, "out");
+            // log_packet(outStream.GetTimeBase(), &pkt, "out");
 
             int err = av_interleaved_write_frame(ctx.get(), &pkt);
             if (err < 0) {

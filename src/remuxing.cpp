@@ -21,18 +21,23 @@ int main(int argc, char **argv) {
         std::string inputFileName = argv[1];
         std::string outputFileName = argv[2];
 
-        Demuxer demuxer(inputFileName);
+        Demuxer demuxer("input.mp4");
+        Demuxer demuxer2("tik.flv");
+        demuxer2.DumpFormat();
 
-        demuxer.DumpFormat();
+        Muxer muxer("out.mov");
 
-        Muxer muxer(outputFileName);
-
-        muxer.CopyStream(demuxer.FindBestVideoStream());
+        muxer.CopyStream(demuxer2.FindBestVideoStream());
+        muxer.CopyStream(demuxer2.FindBestAudioStream());
         muxer.CopyStream(demuxer.FindBestAudioStream());
 
         muxer.DumpFormat();
 
+        muxer.OpenAndWriteHeader();
         muxer.WriteToFile(demuxer);
+        muxer.WriteToFile(demuxer2);
+        muxer.WriteTrailerAndClose();
+
     } catch (const std::runtime_error &err) {
         spdlog::error("{}", err.what());
         return -1;

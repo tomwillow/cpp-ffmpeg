@@ -92,7 +92,7 @@ struct hash<StreamRef> {
 class Demuxer {
 public:
     Demuxer(const std::string &filename)
-        : ctx(nullptr, [](AVFormatContext *rawCtx) {
+        : filename(filename), ctx(nullptr, [](AVFormatContext *rawCtx) {
               avformat_close_input(&rawCtx);
           }) {
         AVFormatContext *rawCtx = nullptr;
@@ -102,6 +102,11 @@ public:
         }
 
         ctx.reset(rawCtx);
+
+        err = avformat_find_stream_info(ctx.get(), NULL);
+        if (err < 0) {
+            throw std::runtime_error(fmt::format("failed to avformat_find_stream_info. err = {}", err));
+        }
 
         for (int i = 0; i < ctx->nb_streams; ++i) {
             switch (ctx->streams[i]->codecpar->codec_type) {
@@ -126,7 +131,7 @@ public:
     }
 
     void DumpFormat() const noexcept {
-        av_dump_format(ctx.get(), 0, NULL, 0);
+        av_dump_format(ctx.get(), 0, filename.c_str(), 0);
     }
 
     StreamRef FindBestStream(AVMediaType mediaType) const noexcept {
@@ -164,6 +169,7 @@ public:
     }
 
 private:
+    std::string filename;
     std::unique_ptr<AVFormatContext, void (*)(AVFormatContext *)> ctx;
     std::vector<StreamRef> videoStreams;
     std::vector<StreamRef> audioStreams;
@@ -192,7 +198,7 @@ public:
     }
 
     void DumpFormat() const noexcept {
-        av_dump_format(ctx.get(), 0, NULL, 1);
+        av_dump_format(ctx.get(), 0, outputFileName.c_str(), 1);
     }
 
     /**
@@ -231,12 +237,11 @@ public:
         otherStreamsToMyStreams.insert({otherStream, newStreamRef});
     }
 
-    void WriteToFile(const Demuxer &inputCtx) const {
+    void OpenAndWriteHeader() {
         if (!(ctx->flags & AVFMT_NOFILE)) {
             int err = avio_open(&ctx->pb, outputFileName.c_str(), AVIO_FLAG_WRITE);
             if (err < 0) {
-                throw std::runtime_error(
-                    fmt::format("failed to avcodec_parameters_copy. err = {}, {}", err, GetErrorInfo(err)));
+                throw std::runtime_error(fmt::format("failed to avio_open. err = {}, {}", err, GetErrorInfo(err)));
             }
         }
 
@@ -245,6 +250,9 @@ public:
             throw std::runtime_error(
                 fmt::format("failed to avformat_write_header. err = {}, {}", err, GetErrorInfo(err)));
         }
+    }
+
+    void WriteToFile(const Demuxer &inputCtx) const {
 
         inputCtx.TraversalPacket([this](AVPacket &pkt, const StreamRef &inputStream) {
             if (otherStreamsToMyStreams.count(inputStream) == 0) {
@@ -270,7 +278,9 @@ public:
                     fmt::format("failed to av_interleaved_write_frame. err = {}, {}", err, GetErrorInfo(err)));
             }
         });
+    }
 
+    void WriteTrailerAndClose() {
         av_write_trailer(ctx.get());
 
         /* close output */
@@ -279,7 +289,7 @@ public:
     }
 
 private:
-    const std::string &outputFileName;
+    std::string outputFileName;
     std::unique_ptr<AVFormatContext, void (*)(AVFormatContext *)> ctx;
     std::vector<StreamRef> videoStreams;
     std::vector<StreamRef> audioStreams;

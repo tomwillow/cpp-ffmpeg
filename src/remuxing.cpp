@@ -27,16 +27,14 @@ int main(int argc, char **argv) {
 
         Muxer muxer("out.mov");
 
-        muxer.CopyStream(demuxer2.FindBestVideoStream());
-        muxer.CopyStream(demuxer2.FindBestAudioStream());
-        muxer.CopyStream(demuxer.FindBestAudioStream());
+        muxer.CopyStream(demuxer2, demuxer2.FindBestVideoStream());
+        muxer.CopyStream(demuxer2, demuxer2.FindBestAudioStream());
+        muxer.CopyStream(demuxer, demuxer.FindBestVideoStream());
+        muxer.CopyStream(demuxer, demuxer.FindBestAudioStream());
 
         muxer.DumpFormat();
 
-        muxer.OpenAndWriteHeader();
-        muxer.WriteToFile(demuxer);
-        muxer.WriteToFile(demuxer2);
-        muxer.WriteTrailerAndClose();
+        muxer.WriteToFile();
 
     } catch (const std::runtime_error &err) {
         spdlog::error("{}", err.what());

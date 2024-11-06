@@ -1,7 +1,7 @@
 
 
-#include "memory_leak_detector.h"
-#include "ffmpeg_wrapper.h"
+#include "cppffmpeg/memory_leak_detector.h"
+#include "cppffmpeg/ffmpeg_wrapper.h"
 
 #include <spdlog/spdlog.h>
 

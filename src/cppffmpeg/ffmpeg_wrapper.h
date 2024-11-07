@@ -3,7 +3,10 @@
 extern "C" {
 #include <libavutil/log.h>
 #include <libavcodec/codec.h>
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include "libavutil/imgutils.h"
+#include "libswscale/swscale.h"
 }
 
 #include <fmt/format.h>
@@ -102,14 +105,16 @@ public:
         AVFormatContext *rawCtx = nullptr;
         int err = avformat_open_input(&rawCtx, filename.c_str(), NULL, NULL);
         if (err < 0) {
-            throw std::runtime_error(fmt::format("failed to avformat_open_input. err = {}", err));
+            throw std::runtime_error(
+                fmt::format("failed to avformat_open_input. err = {}, {}", err, GetErrorInfo(err)));
         }
 
         ctx.reset(rawCtx);
 
         err = avformat_find_stream_info(ctx.get(), NULL);
         if (err < 0) {
-            throw std::runtime_error(fmt::format("failed to avformat_find_stream_info. err = {}", err));
+            throw std::runtime_error(
+                fmt::format("failed to avformat_find_stream_info. err = {}, {}", err, GetErrorInfo(err)));
         }
 
         for (int i = 0; i < ctx->nb_streams; ++i) {
@@ -163,6 +168,21 @@ public:
 
     const AVFormatContext *Raw() const noexcept {
         return ctx.get();
+    }
+
+    std::unordered_map<std::string, std::string> GetInfo() const {
+        std::unordered_map<std::string, std::string> ret;
+        const AVDictionary *m = ctx->metadata;
+        const AVDictionaryEntry *tag = NULL;
+
+        while (1) {
+            tag = av_dict_iterate(m, tag);
+            if (tag == nullptr) {
+                break;
+            }
+        }
+
+        return ret;
     }
 
     void DumpFormat() const noexcept {
@@ -360,5 +380,157 @@ private:
         /* close output */
         if (!(ctx->flags & AVFMT_NOFILE))
             avio_closep(&ctx->pb);
+    }
+};
+
+class Writer {
+public:
+    AVPixelFormat outputFormat;
+    int width, height;
+    AVPixelFormat inputFormat;
+    std::unique_ptr<FILE, std::function<void(FILE *)>> fp;
+    std::unique_ptr<AVFrame, std::function<void(AVFrame *)>> pFrameYUV;
+    std::unique_ptr<uint8_t, std::function<void(uint8_t *)>> out_buffer;
+    std::unique_ptr<SwsContext, std::function<void(SwsContext *)>> img_convert_ctx;
+
+    Writer(const AVCodecContext *pCodecCtx, const std::string &filename)
+        : width(pCodecCtx->width), height(pCodecCtx->height), inputFormat(pCodecCtx->pix_fmt) {
+        outputFormat = AVPixelFormat::AV_PIX_FMT_RGB24;
+
+        fp = std::unique_ptr<FILE, std::function<void(FILE *)>>(fopen(filename.c_str(), "wb"), [](FILE *p) {
+            fclose(p);
+        });
+
+        int bufferSize = av_image_get_buffer_size(outputFormat, width, height, 1);
+        auto out_buffer_raw = (uint8_t *)av_malloc(bufferSize);
+
+        pFrameYUV = std::unique_ptr<AVFrame, std::function<void(AVFrame *)>>(av_frame_alloc(), [](AVFrame *p) {
+            av_frame_free(&p);
+        });
+        out_buffer = std::unique_ptr<uint8_t, std::function<void(uint8_t *)>>(out_buffer_raw, [](uint8_t *p) {
+            av_free(p);
+        });
+
+        int sz = av_image_fill_arrays(pFrameYUV->data, pFrameYUV->linesize, out_buffer.get(), outputFormat, width,
+                                      height, 1);
+        if (sz < 0) {
+            throw std::runtime_error("av_image_fill_arrays failed");
+        }
+
+        SwsContext *img_convert_ctx_raw =
+            sws_getContext(width, height, inputFormat, width, height, outputFormat, SWS_BICUBIC, NULL, NULL, NULL);
+
+        img_convert_ctx =
+            std::unique_ptr<SwsContext, std::function<void(SwsContext *)>>(img_convert_ctx_raw, [](SwsContext *p) {
+                sws_freeContext(p);
+            });
+    }
+
+    void WriteFrame(const AVFrame *frame) {
+
+        //
+        sws_scale(img_convert_ctx.get(), (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height,
+                  pFrameYUV->data, pFrameYUV->linesize);
+
+        if (outputFormat == AVPixelFormat::AV_PIX_FMT_YUV420P) {
+            fwrite(pFrameYUV->data[0], pFrameYUV->linesize[0] * frame->height, 1, fp.get());
+            fwrite(pFrameYUV->data[1], width * frame->height / 4, 1, fp.get());
+            fwrite(pFrameYUV->data[2], width * frame->height / 4, 1, fp.get());
+            return;
+        }
+
+        if (outputFormat == AVPixelFormat::AV_PIX_FMT_RGB24) {
+            // if (!frame->key_frame) {
+            //	return;
+            // }
+
+            // static int i = 0;
+            // string filename = std::to_string(i) + ".png";
+
+            // stbi_write_png(filename.c_str(), pCodecCtx->width, pCodecCtx->height, 3, pFrameYUV->data[0], 0);
+            fwrite(pFrameYUV->data[0], pFrameYUV->linesize[0] * frame->height, 1, fp.get());
+            // i++;
+            return;
+        }
+
+        assert(0);
+    }
+};
+
+class MyDecoder {
+public:
+    MyDecoder(Demuxer &demuxer, StreamRef stream) : demuxer(demuxer), stream(stream) {
+
+        const AVCodec *pCodec = avcodec_find_decoder(stream.GetAVStream()->codecpar->codec_id);
+        if (pCodec == NULL) {
+            throw std::runtime_error(fmt::format("failed to avcodec_find_decoder. codec_id = {}",
+                                                 static_cast<int>(stream.GetAVStream()->codecpar->codec_id)));
+        }
+
+        pCodecCtx = std::unique_ptr<AVCodecContext, std::function<void(AVCodecContext *)>>(
+            avcodec_alloc_context3(pCodec), [](AVCodecContext *p) {
+                avcodec_free_context(&p);
+            });
+
+        int ok = avcodec_parameters_to_context(pCodecCtx.get(), stream.GetAVStream()->codecpar);
+        if (ok < 0) {
+            throw std::runtime_error("avcodec_parameters_to_context failed");
+        }
+
+        if (avcodec_open2(pCodecCtx.get(), pCodec, NULL) < 0) {
+            throw std::runtime_error("Could not open codec");
+        }
+
+        pFrame = std::unique_ptr<AVFrame, std::function<void(AVFrame *)>>(av_frame_alloc(), [](AVFrame *p) {
+            av_frame_free(&p);
+        });
+    }
+
+    void WriteYUV() {
+
+        Writer writer(pCodecCtx.get(), "a.rgb");
+
+        int frame_cnt = 0;
+        demuxer.TraversalPacket([this, &writer, &frame_cnt](AVPacket &pkt, const StreamRef &inputStream) {
+            if (stream != inputStream) {
+                return;
+            }
+
+            Decode(&pkt, [&writer](const AVFrame *frame) {
+                writer.WriteFrame(frame);
+            });
+
+            printf("Decoded frame index: %d\n", frame_cnt);
+            frame_cnt++;
+        });
+
+        Decode(NULL, [&writer](const AVFrame *frame) {
+            writer.WriteFrame(frame);
+        });
+    }
+
+private:
+    Demuxer &demuxer;
+    StreamRef stream;
+    std::unique_ptr<AVCodecContext, std::function<void(AVCodecContext *)>> pCodecCtx;
+    std::unique_ptr<AVFrame, std::function<void(AVFrame *)>> pFrame;
+
+    void Decode(const AVPacket *packet, std::function<void(const AVFrame *frame)> fn) {
+
+        int ret = avcodec_send_packet(pCodecCtx.get(), packet);
+        if (ret != 0) {
+            throw std::runtime_error("avcodec_send_packet failed");
+        }
+
+        while (1) {
+            ret = avcodec_receive_frame(pCodecCtx.get(), pFrame.get());
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                return;
+            else if (ret < 0) {
+                throw std::runtime_error("avcodec_receive_frame failed");
+            }
+
+            fn(pFrame.get());
+        }
     }
 };

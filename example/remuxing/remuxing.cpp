@@ -22,12 +22,11 @@ int main(int argc, char **argv) {
         std::string outputFileName = argv[2];
 
         Demuxer demuxer("input.mp4");
-        Demuxer demuxer2("tik.flv");
+        Demuxer demuxer2("music.mp3");
         demuxer2.DumpFormat();
 
         Muxer muxer("out.mov");
 
-        muxer.CopyStream(demuxer2, demuxer2.FindBestVideoStream());
         muxer.CopyStream(demuxer2, demuxer2.FindBestAudioStream());
         muxer.CopyStream(demuxer, demuxer.FindBestVideoStream());
         muxer.CopyStream(demuxer, demuxer.FindBestAudioStream());
